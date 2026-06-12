@@ -1,6 +1,12 @@
 #include "LayoutEngine.h"
+#include <algorithm>
 
 namespace miniwm {
+
+// Safe range for masterRatio. Values outside this range produce a degenerate
+// layout (one column collapses to 0 width).
+static constexpr double kMinMasterRatio = 0.1;
+static constexpr double kMaxMasterRatio = 0.9;
 
 std::vector<Rect> LayoutEngine::computeLayout(int count,
                                                int screenX, int screenY,
@@ -12,6 +18,11 @@ std::vector<Rect> LayoutEngine::computeLayout(int count,
 
     // Guard against invalid screen bounds or excessive gap
     if (screenW <= 0 || screenH <= 0 || gap < 0) return result;
+
+    // Clamp masterRatio to a safe range. Even though Config also clamps, this
+    // makes LayoutEngine safe to use with any caller.
+    if (masterRatio < kMinMasterRatio) masterRatio = kMinMasterRatio;
+    if (masterRatio > kMaxMasterRatio) masterRatio = kMaxMasterRatio;
 
     int innerX = screenX + gap;
     int innerY = screenY + gap;

@@ -1,12 +1,18 @@
 #include "Config.h"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 
 namespace miniwm {
 
 // Default config file path.
 static const char* kDefaultConfigPath = "~/.config/miniwm/miniwm.conf";
+
+// Safe range for masterRatio. Outside this range, the layout becomes degenerate.
+static constexpr double kMinMasterRatio = 0.1;
+static constexpr double kMaxMasterRatio = 0.9;
 
 // Expand ~ to $HOME.
 static std::string expandPath(const std::string& path) {
@@ -51,6 +57,52 @@ static bool parseRule(const std::string& value, ConfigRule& out) {
     return !out.type.empty() && !out.value.empty();
 }
 
+// Safe integer parse. Returns true on success, false on failure.
+static bool tryParseInt(const std::string& s, int& out) {
+    if (s.empty()) return false;
+    try {
+        size_t pos = 0;
+        long val = std::stol(s, &pos);
+        if (pos != s.size()) return false; // trailing garbage
+        out = (int)val;
+        return true;
+    } catch (const std::invalid_argument&) {
+        return false;
+    } catch (const std::out_of_range&) {
+        return false;
+    }
+}
+
+// Safe double parse. Returns true on success, false on failure.
+static bool tryParseDouble(const std::string& s, double& out) {
+    if (s.empty()) return false;
+    try {
+        size_t pos = 0;
+        double val = std::stod(s, &pos);
+        if (pos != s.size()) return false; // trailing garbage
+        out = val;
+        return true;
+    } catch (const std::invalid_argument&) {
+        return false;
+    } catch (const std::out_of_range&) {
+        return false;
+    }
+}
+
+// Clamp masterRatio to the safe range and report if clamping occurred.
+static double clampMasterRatio(double value, bool& wasClamped) {
+    if (value < kMinMasterRatio) {
+        wasClamped = true;
+        return kMinMasterRatio;
+    }
+    if (value > kMaxMasterRatio) {
+        wasClamped = true;
+        return kMaxMasterRatio;
+    }
+    wasClamped = false;
+    return value;
+}
+
 Config parseConfig(const std::string& text) {
     Config config;
     std::istringstream stream(text);
@@ -72,15 +124,41 @@ Config parseConfig(const std::string& text) {
         std::string value = trim(trimmed.substr(eq + 1));
 
         if (key == "gap") {
-            config.gap = std::stoi(value);
+            int parsed;
+            if (tryParseInt(value, parsed)) {
+                if (parsed < 0 || parsed > 10000) {
+                    std::cerr << "Config line " << lineNum << ": gap '" << value
+                              << "' out of range (0-10000), using default " << config.gap << "\n";
+                } else {
+                    config.gap = parsed;
+                }
+            } else {
+                std::cerr << "Config line " << lineNum << ": invalid gap '" << value
+                          << "', using default " << config.gap << "\n";
+            }
         } else if (key == "layout") {
-            config.layout = value;
-            if (value != "master-stack") {
-                std::cerr << "Config: layout '" << value << "' is not supported yet. Falling back to master-stack.\n";
+            if (value == "master-stack") {
+                config.layout = value;
+            } else {
+                std::cerr << "Config: layout '" << value
+                          << "' is not supported yet. Falling back to master-stack.\n";
                 config.layout = "master-stack";
             }
         } else if (key == "master_ratio") {
-            config.masterRatio = std::stod(value);
+            double parsed;
+            if (tryParseDouble(value, parsed)) {
+                bool clamped = false;
+                double clampedValue = clampMasterRatio(parsed, clamped);
+                if (clamped) {
+                    std::cerr << "Config line " << lineNum << ": master_ratio " << parsed
+                              << " out of range [" << kMinMasterRatio << ", " << kMaxMasterRatio
+                              << "], clamped to " << clampedValue << "\n";
+                }
+                config.masterRatio = clampedValue;
+            } else {
+                std::cerr << "Config line " << lineNum << ": invalid master_ratio '" << value
+                          << "', using default " << config.masterRatio << "\n";
+            }
         } else if (key == "bind") {
             HotkeyBinding binding;
             if (parseBind(value, binding)) {
