@@ -378,6 +378,32 @@ WindowInfo getFocusedWindow() {
     return result;
 }
 
+AXUIElementRef getFocusedWindowRef() {
+    AXUIElementRef result = nullptr;
+
+    AXUIElementRef systemWide = AXUIElementCreateSystemWide();
+    if (!systemWide) return result;
+
+    AXUIElementRef frontApp = nullptr;
+    if (AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute, (CFTypeRef*)&frontApp) != kAXErrorSuccess || !frontApp) {
+        CFRelease(systemWide);
+        return result;
+    }
+
+    // The returned ref from kAXFocusedWindowAttribute is owned by the
+    // application AXUIElement, so we need to retain it for the caller.
+    AXUIElementRef focusedWindow = nullptr;
+    if (AXUIElementCopyAttributeValue(frontApp, kAXFocusedWindowAttribute, (CFTypeRef*)&focusedWindow) == kAXErrorSuccess
+        && focusedWindow) {
+        result = focusedWindow; // ownership transferred (CFRetain by convention;
+                                // caller must CFRelease)
+    }
+
+    CFRelease(frontApp);
+    CFRelease(systemWide);
+    return result;
+}
+
 bool focusWindow(AXUIElementRef windowRef) {
     if (!windowRef) return false;
     AXError err = AXUIElementSetAttributeValue(windowRef, kAXMainAttribute, kCFBooleanTrue);
@@ -391,11 +417,20 @@ bool moveWindowBy(AXUIElementRef windowRef, int dx, int dy) {
     if (!windowRef) return false;
 
     AXValueRef positionRef = nullptr;
-    CGPoint position;
-    if (AXUIElementCopyAttributeValue(windowRef, kAXPositionAttribute, (CFTypeRef*)&positionRef) != kAXErrorSuccess || !positionRef) {
+    CGPoint position = {0, 0};
+
+    // Read current position with full validation:
+    // 1. Check the attribute copy succeeded
+    // 2. Check the returned ref is non-null
+    // 3. Check it's actually an AXValue (not some other CFType)
+    // 4. Check AXValueGetValue succeeded
+    if (AXUIElementCopyAttributeValue(windowRef, kAXPositionAttribute, (CFTypeRef*)&positionRef) != kAXErrorSuccess
+        || !positionRef
+        || CFGetTypeID(positionRef) != AXValueGetTypeID()
+        || !AXValueGetValue(positionRef, (AXValueType)kAXValueCGPointType, &position)) {
+        if (positionRef) CFRelease(positionRef);
         return false;
     }
-    AXValueGetValue(positionRef, (AXValueType)kAXValueCGPointType, &position);
     CFRelease(positionRef);
 
     position.x += dx;

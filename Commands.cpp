@@ -6,10 +6,15 @@
 namespace miniwm {
 
 // Check if a window matches any rule in the config.
+// - "app" rules match the app name exactly.
+// - "title" rules match if the window title contains the rule value
+//   (substring match). This is more forgiving than exact match and lets
+//   rules like "ignore = title:Picture in Picture" work on window titles
+//   such as "Zoom Meeting - Picture in Picture".
 static bool matchesRule(const WindowInfo& window, const std::vector<ConfigRule>& rules) {
     for (const auto& rule : rules) {
         if (rule.type == "app" && window.appName == rule.value) return true;
-        if (rule.type == "title" && window.title == rule.value) return true;
+        if (rule.type == "title" && window.title.find(rule.value) != std::string::npos) return true;
     }
     return false;
 }
@@ -113,10 +118,16 @@ int cmdFocus(const Config& config, const std::string& direction) {
         return 1;
     }
 
-    // Find the focused window in the enumerated list.
+    // Find the focused window in the enumerated list. Match by PID, title,
+    // and position to disambiguate when multiple windows from the same app
+    // share a title (e.g. multiple Terminal windows).
     size_t focusedIndex = windows.size();
     for (size_t i = 0; i < windows.size(); i++) {
-        if (windows[i].info().pid == focused.pid && windows[i].info().title == focused.title) {
+        const auto& w = windows[i].info();
+        if (w.pid == focused.pid
+            && w.title == focused.title
+            && w.x == focused.x
+            && w.y == focused.y) {
             focusedIndex = i;
             break;
         }
@@ -174,25 +185,12 @@ int cmdFocus(const Config& config, const std::string& direction) {
 }
 
 int cmdMove(const Config& config, const std::string& direction) {
-    auto focused = getFocusedWindow();
-    if (focused.pid == 0) {
-        std::cerr << "No focused window found.\n";
-        return 1;
-    }
-
-    // Find the AXUIElementRef for the focused window.
-    // We need to re-enumerate to get the nativeRef.
-    auto windows = enumerateWindows();
-    AXUIElementRef focusedRef = nullptr;
-    for (auto& w : windows) {
-        if (w.info().pid == focused.pid && w.info().title == focused.title) {
-            focusedRef = w.nativeRef();
-            break;
-        }
-    }
-
+    // Get the actual focused window AXUIElementRef directly. This avoids
+    // fragile PID+title matching that can fail when multiple windows from
+    // the same app share the same title.
+    AXUIElementRef focusedRef = getFocusedWindowRef();
     if (!focusedRef) {
-        std::cerr << "Focused window not found.\n";
+        std::cerr << "No focused window found.\n";
         return 1;
     }
 
@@ -204,6 +202,7 @@ int cmdMove(const Config& config, const std::string& direction) {
     if (direction == "down")   dy = step;
 
     bool ok = moveWindowBy(focusedRef, dx, dy);
+    CFRelease(focusedRef);
     if (!ok) {
         std::cerr << "Failed to move window.\n";
         return 1;

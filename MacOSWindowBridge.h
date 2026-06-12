@@ -30,17 +30,30 @@ private:
 bool checkAccessibilityPermission();
 std::vector<ManagedWindow> enumerateWindows();
 
-// Returns the main screen's visible frame in points, with origin at the
-// bottom-left (Cocoa coordinate system). Already excludes the menu bar and Dock.
+// Returns the main screen's visible frame in points, converted from
+// NSScreen's Cocoa coordinate system (bottom-left origin) to top-left
+// global screen coordinates. The returned rect already excludes the
+// menu bar and Dock. Safe to pass directly to AXUIElement position/size
+// setters, which use the same top-left coordinate space.
 Rect getMainScreenVisibleFrame();
 
-// Returns true if the given window bounds (in Cocoa coordinates, top-left origin)
-// intersect the given screen rect. Both rects are in the same coordinate space.
+// Returns true if the given window bounds intersect the given screen rect.
+// Both rects are expected to be in top-left global screen coordinates
+// (the same coordinate space used by AX window positions and by
+// getMainScreenVisibleFrame()).
 bool windowIntersectsScreen(const WindowInfo& window, const Rect& screen);
 
 // Returns the currently focused window (frontmost app + focused window).
 // If no focused window is found, returns a WindowInfo with pid == 0.
 WindowInfo getFocusedWindow();
+
+// Returns a retained AXUIElementRef for the currently focused window.
+// The caller must CFRelease the returned ref when done.
+// Returns NULL if no focused window is found.
+// This is the most reliable way to refer to the focused window — it
+// does not depend on PID+title matching and works even when multiple
+// windows from the same app share the same title.
+AXUIElementRef getFocusedWindowRef();
 
 // Focus (raise) the given window.
 bool focusWindow(AXUIElementRef windowRef);

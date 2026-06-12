@@ -193,12 +193,22 @@ Config loadConfig(const std::string& path) {
     std::ifstream file(configPath);
     if (!file.is_open()) {
         std::cerr << "Config file not found at " << configPath << ", using defaults.\n";
-        return Config{};
+        Config config;
+        config.setDefaultBindings();
+        return config;
     }
 
     std::stringstream buffer;
     buffer << file.rdbuf();
-    return parseConfig(buffer.str());
+    Config config = parseConfig(buffer.str());
+
+    // If the config file did not define any bindings, fall back to defaults
+    // so the daemon is usable out of the box.
+    if (config.bindings.empty()) {
+        config.setDefaultBindings();
+    }
+
+    return config;
 }
 
 void printConfig(const Config& config) {
