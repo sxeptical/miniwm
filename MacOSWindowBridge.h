@@ -27,4 +27,12 @@ private:
 bool checkAccessibilityPermission();
 std::vector<ManagedWindow> enumerateWindows();
 
+// Returns the main screen's visible frame in points, with origin at the
+// bottom-left (Cocoa coordinate system). Already excludes the menu bar and Dock.
+Rect getMainScreenVisibleFrame();
+
+// Returns true if the given window bounds (in Cocoa coordinates, top-left origin)
+// intersect the given screen rect. Both rects are in the same coordinate space.
+bool windowIntersectsScreen(const WindowInfo& window, const Rect& screen);
+
 } // namespace miniwm

@@ -55,7 +55,17 @@ bool ManagedWindow::setPositionAndSize(int x, int y, int w, int h) const {
     return posErr == kAXErrorSuccess && sizeErr == kAXErrorSuccess;
 }
 
-// Helper: cross-check AX window against CGWindowList by matching bounds and PID
+// Helper: check if two rects overlap (with a small epsilon tolerance for edges)
+static bool rectsOverlap(CGRect a, CGRect b) {
+    const double epsilon = 1.0;
+    return (a.origin.x + a.size.width > b.origin.x + epsilon)
+        && (b.origin.x + b.size.width > a.origin.x + epsilon)
+        && (a.origin.y + a.size.height > b.origin.y + epsilon)
+        && (b.origin.y + b.size.height > a.origin.y + epsilon);
+}
+
+// Helper: cross-check AX window against CGWindowList.
+// Matches by same PID and overlapping bounds (loose match — any visible overlap).
 static bool isAXWindowOnScreen(AXUIElementRef windowRef, pid_t pid) {
     // Get AX position and size
     AXValueRef positionRef = NULL, sizeRef = NULL;
@@ -76,7 +86,9 @@ static bool isAXWindowOnScreen(AXUIElementRef windowRef, pid_t pid) {
 
     if (!gotPos || !gotSize) return true; // Can't verify, assume visible
 
-    // Now query CGWindowList and try to match by PID, position, and size
+    CGRect axBounds = CGRectMake(position.x, position.y, size.width, size.height);
+
+    // Query CGWindowList for on-screen windows
     CFArrayRef windowList = CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         kCGNullWindowID
@@ -94,15 +106,10 @@ static bool isAXWindowOnScreen(AXUIElementRef windowRef, pid_t pid) {
         if (!CFNumberGetValue(pidRef, kCFNumberIntType, &infoPid)) continue;
         if (infoPid != pid) continue;
 
-        // Compare bounds
+        // Compare bounds — loose match: same PID with overlapping bounds
         CGRect cgBounds;
         if (CGRectMakeWithDictionaryRepresentation(boundsRef, &cgBounds)) {
-            // Allow small floating point tolerance
-            const double epsilon = 2.0;
-            if (fabs(cgBounds.origin.x - position.x) < epsilon
-                && fabs(cgBounds.origin.y - position.y) < epsilon
-                && fabs(cgBounds.size.width - size.width) < epsilon
-                && fabs(cgBounds.size.height - size.height) < epsilon) {
+            if (rectsOverlap(axBounds, cgBounds)) {
                 found = true;
                 break;
             }
@@ -288,6 +295,47 @@ std::vector<ManagedWindow> enumerateWindows() {
 
     // Fallback to relaxed filtering
     return enumerateWindowsInternal(false);
+}
+
+Rect getMainScreenVisibleFrame() {
+    // Use NSScreen.visibleFrame to get the usable area excluding the menu
+    // bar and Dock. NSScreen returns coordinates in Cocoa space (bottom-left
+    // origin). We convert to screen coordinates (top-left origin) for use
+    // with the AX-based layout code.
+    NSScreen *mainScreen = [NSScreen mainScreen];
+    if (!mainScreen) {
+        // Fallback to CGDisplayBounds if NSScreen is unavailable
+        CGRect bounds = CGDisplayBounds(CGMainDisplayID());
+        return Rect{
+            (int)bounds.origin.x,
+            (int)bounds.origin.y,
+            (int)bounds.size.width,
+            (int)bounds.size.height
+        };
+    }
+
+    NSRect visible = [mainScreen visibleFrame];
+    NSRect full = [mainScreen frame];
+
+    // Convert from Cocoa (bottom-left) to screen (top-left) coordinates.
+    // screenHeight = full.size.height
+    // y_top = screenHeight - y_bottom - height
+    int screenHeight = (int)full.size.height;
+    int x = (int)visible.origin.x;
+    int y = screenHeight - (int)visible.origin.y - (int)visible.size.height;
+    int w = (int)visible.size.width;
+    int h = (int)visible.size.height;
+
+    return Rect{x, y, w, h};
+}
+
+bool windowIntersectsScreen(const WindowInfo& window, const Rect& screen) {
+    // Both `window` (from AX) and `screen` (converted from NSScreen) are
+    // in screen coordinates with top-left origin. CGRectIntersectsRect
+    // works correctly when both rects are in the same coordinate space.
+    CGRect screenRect = CGRectMake(screen.x, screen.y, screen.w, screen.h);
+    CGRect windowRect = CGRectMake(window.x, window.y, window.w, window.h);
+    return CGRectIntersectsRect(screenRect, windowRect);
 }
 
 } // namespace miniwm
