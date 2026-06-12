@@ -1,6 +1,9 @@
 #include "MacOSWindowBridge.h"
 #include <AppKit/AppKit.h>
+#include <cmath>
 #include <iostream>
+#include <unistd.h>
+#include <vector>
 
 namespace miniwm {
 
@@ -52,7 +55,66 @@ bool ManagedWindow::setPositionAndSize(int x, int y, int w, int h) const {
     return posErr == kAXErrorSuccess && sizeErr == kAXErrorSuccess;
 }
 
+// Helper: cross-check AX window against CGWindowList by matching bounds and PID
+static bool isAXWindowOnScreen(AXUIElementRef windowRef, pid_t pid) {
+    // Get AX position and size
+    AXValueRef positionRef = NULL, sizeRef = NULL;
+    CGPoint position = {0, 0};
+    CGSize size = {0, 0};
+
+    bool gotPos = AXUIElementCopyAttributeValue(windowRef, kAXPositionAttribute, (CFTypeRef*)&positionRef) == kAXErrorSuccess
+                  && positionRef
+                  && CFGetTypeID(positionRef) == AXValueGetTypeID()
+                  && AXValueGetValue(positionRef, (AXValueType)kAXValueCGPointType, &position);
+    if (positionRef) CFRelease(positionRef);
+
+    bool gotSize = AXUIElementCopyAttributeValue(windowRef, kAXSizeAttribute, (CFTypeRef*)&sizeRef) == kAXErrorSuccess
+                  && sizeRef
+                  && CFGetTypeID(sizeRef) == AXValueGetTypeID()
+                  && AXValueGetValue(sizeRef, (AXValueType)kAXValueCGSizeType, &size);
+    if (sizeRef) CFRelease(sizeRef);
+
+    if (!gotPos || !gotSize) return true; // Can't verify, assume visible
+
+    // Now query CGWindowList and try to match by PID, position, and size
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID
+    );
+    if (!windowList) return true;
+
+    bool found = false;
+    for (CFIndex i = 0; i < CFArrayGetCount(windowList); i++) {
+        CFDictionaryRef info = (CFDictionaryRef)CFArrayGetValueAtIndex(windowList, i);
+        CFNumberRef pidRef = (CFNumberRef)CFDictionaryGetValue(info, kCGWindowOwnerPID);
+        CFDictionaryRef boundsRef = (CFDictionaryRef)CFDictionaryGetValue(info, kCGWindowBounds);
+        if (!pidRef || !boundsRef) continue;
+
+        pid_t infoPid;
+        if (!CFNumberGetValue(pidRef, kCFNumberIntType, &infoPid)) continue;
+        if (infoPid != pid) continue;
+
+        // Compare bounds
+        CGRect cgBounds;
+        if (CGRectMakeWithDictionaryRepresentation(boundsRef, &cgBounds)) {
+            // Allow small floating point tolerance
+            const double epsilon = 2.0;
+            if (fabs(cgBounds.origin.x - position.x) < epsilon
+                && fabs(cgBounds.origin.y - position.y) < epsilon
+                && fabs(cgBounds.size.width - size.width) < epsilon
+                && fabs(cgBounds.size.height - size.height) < epsilon) {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    CFRelease(windowList);
+    return found;
+}
+
 // Helper: copy CFStringRef to std::string
+// Uses dynamic buffer size to handle titles of any length.
 static bool getStringAttribute(AXUIElementRef element, CFStringRef attr, std::string& out) {
     CFTypeRef ref;
     if (AXUIElementCopyAttributeValue(element, attr, &ref) != kAXErrorSuccess) {
@@ -63,9 +125,20 @@ static bool getStringAttribute(AXUIElementRef element, CFStringRef attr, std::st
         return false;
     }
     CFStringRef strRef = (CFStringRef)ref;
-    char buffer[256];
-    bool success = CFStringGetCString(strRef, buffer, sizeof(buffer), kCFStringEncodingUTF8);
-    if (success) out = buffer;
+
+    // Get the maximum buffer size needed for this string in UTF-8 encoding
+    CFIndex length = CFStringGetLength(strRef);
+    CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+
+    // Cap at a reasonable limit to avoid pathological allocations
+    const CFIndex kMaxTitleSize = 64 * 1024; // 64KB
+    if (maxSize > kMaxTitleSize) maxSize = kMaxTitleSize;
+
+    std::vector<char> buffer(maxSize);
+    bool success = CFStringGetCString(strRef, buffer.data(), buffer.size(), kCFStringEncodingUTF8);
+    if (success) {
+        out.assign(buffer.data());
+    }
     CFRelease(strRef);
     return success;
 }
@@ -90,23 +163,33 @@ static bool fetchWindowInfo(AXUIElementRef windowRef, WindowInfo& info, bool str
     }
     if (minimized) return false;
 
-    // 3. Check valid bounds
-    AXValueRef positionRef, sizeRef;
-    CGPoint position;
-    CGSize size;
-    bool hasBounds = true;
-    if (AXUIElementCopyAttributeValue(windowRef, kAXPositionAttribute, (CFTypeRef*)&positionRef) == kAXErrorSuccess) {
-        AXValueGetValue(positionRef, (AXValueType)kAXValueCGPointType, &position);
-        CFRelease(positionRef);
+    // 3. Check valid bounds (validate type ID and extraction success)
+    AXValueRef positionRef = NULL;
+    AXValueRef sizeRef = NULL;
+    CGPoint position = {0, 0};
+    CGSize size = {0, 0};
+    bool hasBounds = false;
+
+    if (AXUIElementCopyAttributeValue(windowRef, kAXPositionAttribute, (CFTypeRef*)&positionRef) == kAXErrorSuccess
+        && positionRef
+        && CFGetTypeID(positionRef) == AXValueGetTypeID()
+        && AXValueGetValue(positionRef, (AXValueType)kAXValueCGPointType, &position)) {
+        hasBounds = true;
+    }
+    if (positionRef) CFRelease(positionRef);
+    positionRef = NULL;
+
+    if (AXUIElementCopyAttributeValue(windowRef, kAXSizeAttribute, (CFTypeRef*)&sizeRef) == kAXErrorSuccess
+        && sizeRef
+        && CFGetTypeID(sizeRef) == AXValueGetTypeID()
+        && AXValueGetValue(sizeRef, (AXValueType)kAXValueCGSizeType, &size)) {
+        // keep hasBounds as true only if both succeeded
     } else {
         hasBounds = false;
     }
-    if (AXUIElementCopyAttributeValue(windowRef, kAXSizeAttribute, (CFTypeRef*)&sizeRef) == kAXErrorSuccess) {
-        AXValueGetValue(sizeRef, (AXValueType)kAXValueCGSizeType, &size);
-        CFRelease(sizeRef);
-    } else {
-        hasBounds = false;
-    }
+    if (sizeRef) CFRelease(sizeRef);
+    sizeRef = NULL;
+
     if (!hasBounds || size.width <= 0 || size.height <= 0) return false;
 
     // 4. Strict filtering
@@ -166,6 +249,10 @@ static std::vector<ManagedWindow> enumerateWindowsInternal(bool strict) {
 
             WindowInfo info;
             if (!fetchWindowInfo(windowRef, info, strict)) continue;
+
+            // Cross-check against CGWindowList to ensure window is actually
+            // on-screen on the current Space/display.
+            if (!isAXWindowOnScreen(windowRef, pid)) continue;
 
             // We take ownership of this window ref
             CFRetain(windowRef);

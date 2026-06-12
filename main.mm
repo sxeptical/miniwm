@@ -13,6 +13,14 @@ int main(int argc, char* argv[]) {
 
     std::string cmd = argv[1];
 
+    // Validate command before requesting Accessibility permission
+    // to avoid triggering the system prompt for invalid commands.
+    if (cmd != "list" && cmd != "tile") {
+        std::cerr << "Unknown command: " << cmd << "\n";
+        std::cerr << "Usage: miniwm <list|tile>\n";
+        return 1;
+    }
+
     // Check Accessibility permission
     if (!miniwm::checkAccessibilityPermission()) {
         std::cerr << "Accessibility permission required.\n"
@@ -53,6 +61,11 @@ int main(int argc, char* argv[]) {
             10  // gap
         );
 
+        if (rects.empty()) {
+            std::cerr << "Layout computation failed (screen too small or gap too large).\n";
+            return 1;
+        }
+
         // Apply layout to each window
         for (size_t i = 0; i < windows.size(); i++) {
             const auto& rect = rects[i];
@@ -62,10 +75,6 @@ int main(int argc, char* argv[]) {
                           << windows[i].info().title << "\n";
             }
         }
-
-    } else {
-        std::cerr << "Unknown command: " << cmd << "\n";
-        return 1;
     }
 
     return 0;
