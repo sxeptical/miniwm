@@ -55,6 +55,10 @@ bool ManagedWindow::setPositionAndSize(int x, int y, int w, int h) const {
     return posErr == kAXErrorSuccess && sizeErr == kAXErrorSuccess;
 }
 
+AXUIElementRef ManagedWindow::nativeRef() const {
+    return ref_;
+}
+
 // Helper: check if two rects overlap (with a small epsilon tolerance for edges)
 static bool rectsOverlap(CGRect a, CGRect b) {
     const double epsilon = 1.0;
@@ -336,6 +340,73 @@ bool windowIntersectsScreen(const WindowInfo& window, const Rect& screen) {
     CGRect screenRect = CGRectMake(screen.x, screen.y, screen.w, screen.h);
     CGRect windowRect = CGRectMake(window.x, window.y, window.w, window.h);
     return CGRectIntersectsRect(screenRect, windowRect);
+}
+
+WindowInfo getFocusedWindow() {
+    WindowInfo result;
+    result.pid = 0;
+
+    AXUIElementRef systemWide = AXUIElementCreateSystemWide();
+    if (!systemWide) return result;
+
+    AXUIElementRef frontApp = nullptr;
+    if (AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute, (CFTypeRef*)&frontApp) != kAXErrorSuccess || !frontApp) {
+        CFRelease(systemWide);
+        return result;
+    }
+
+    pid_t pid = 0;
+    AXUIElementGetPid(frontApp, &pid);
+
+    AXUIElementRef focusedWindow = nullptr;
+    if (AXUIElementCopyAttributeValue(frontApp, kAXFocusedWindowAttribute, (CFTypeRef*)&focusedWindow) != kAXErrorSuccess || !focusedWindow) {
+        CFRelease(frontApp);
+        CFRelease(systemWide);
+        return result;
+    }
+
+    // Read the window info using the existing fetchWindowInfo helper
+    WindowInfo info;
+    if (fetchWindowInfo(focusedWindow, info, false)) {
+        info.pid = pid;
+        result = info;
+    }
+
+    CFRelease(focusedWindow);
+    CFRelease(frontApp);
+    CFRelease(systemWide);
+    return result;
+}
+
+bool focusWindow(AXUIElementRef windowRef) {
+    if (!windowRef) return false;
+    AXError err = AXUIElementSetAttributeValue(windowRef, kAXMainAttribute, kCFBooleanTrue);
+    if (err != kAXErrorSuccess) {
+        err = AXUIElementPerformAction(windowRef, kAXRaiseAction);
+    }
+    return err == kAXErrorSuccess;
+}
+
+bool moveWindowBy(AXUIElementRef windowRef, int dx, int dy) {
+    if (!windowRef) return false;
+
+    AXValueRef positionRef = nullptr;
+    CGPoint position;
+    if (AXUIElementCopyAttributeValue(windowRef, kAXPositionAttribute, (CFTypeRef*)&positionRef) != kAXErrorSuccess || !positionRef) {
+        return false;
+    }
+    AXValueGetValue(positionRef, (AXValueType)kAXValueCGPointType, &position);
+    CFRelease(positionRef);
+
+    position.x += dx;
+    position.y += dy;
+
+    AXValueRef newPositionRef = AXValueCreate((AXValueType)kAXValueCGPointType, &position);
+    if (!newPositionRef) return false;
+
+    AXError err = AXUIElementSetAttributeValue(windowRef, kAXPositionAttribute, newPositionRef);
+    CFRelease(newPositionRef);
+    return err == kAXErrorSuccess;
 }
 
 } // namespace miniwm

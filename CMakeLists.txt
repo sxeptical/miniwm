@@ -8,7 +8,10 @@ add_executable(miniwm
     main.mm
     Window.cpp
     LayoutEngine.cpp
+    Config.cpp
+    Commands.cpp
     MacOSWindowBridge.mm
+    HotkeyDaemon.mm
 )
 
 target_link_libraries(miniwm

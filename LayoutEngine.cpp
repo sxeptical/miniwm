@@ -5,7 +5,8 @@ namespace miniwm {
 std::vector<Rect> LayoutEngine::computeLayout(int count,
                                                int screenX, int screenY,
                                                int screenW, int screenH,
-                                               int gap) {
+                                               int gap,
+                                               double masterRatio) {
     std::vector<Rect> result;
     if (count <= 0) return result;
 
@@ -23,24 +24,26 @@ std::vector<Rect> LayoutEngine::computeLayout(int count,
     if (count == 1) {
         result.push_back({innerX, innerY, innerW, innerH});
     } else if (count == 2) {
-        int colW = (innerW - gap) / 2;
-        if (colW <= 0) return result;
-        result.push_back({innerX, innerY, colW, innerH});
-        result.push_back({innerX + colW + gap, innerY, colW, innerH});
+        int masterWidth = (int)((innerW - gap) * masterRatio);
+        int stackWidth = innerW - gap - masterWidth;
+        if (masterWidth <= 0 || stackWidth <= 0) return result;
+        result.push_back({innerX, innerY, masterWidth, innerH}); // Master
+        result.push_back({innerX + masterWidth + gap, innerY, stackWidth, innerH});
     } else {
-        int colW = (innerW - gap) / 2;
-        if (colW <= 0) return result;
+        int masterWidth = (int)((innerW - gap) * masterRatio);
+        int stackWidth = innerW - gap - masterWidth;
+        if (masterWidth <= 0 || stackWidth <= 0) return result;
         int stackCount = count - 1;
         int stackH = (innerH - (stackCount - 1) * gap) / stackCount;
         if (stackH <= 0) return result;
 
-        result.push_back({innerX, innerY, colW, innerH}); // Master
+        result.push_back({innerX, innerY, masterWidth, innerH}); // Master
 
         for (int i = 0; i < stackCount; i++) {
             result.push_back({
-                innerX + colW + gap,
+                innerX + masterWidth + gap,
                 innerY + i * (stackH + gap),
-                colW,
+                stackWidth,
                 stackH
             });
         }
